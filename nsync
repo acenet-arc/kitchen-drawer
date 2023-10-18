@@ -176,7 +176,12 @@ else
     
     listFile=".nsynctmp.$$"
 
-    fullSuffix=".$suffix"
+    if [ "$suffix" != "" ]
+    then
+	fullSuffix=".$suffix"
+    else
+	fullSuffix=""
+    fi
     
     # rsync files in chunkSize clumps
     for idump in $initDumps
