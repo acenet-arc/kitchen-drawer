@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+#
+# nsync - a neat way of using rsync, for lots of files with regular numbering,
+# 	  eg. prefix_XXXX.suffix
+#
+# 10/18/23: Version 1.0 (Timberlake release)
+#
+# Usage:
+# nsync (options below)
+#     -p prefix         (file prefix)
+#   [ -z suffix ]  	(OPTIONAL: common file suffix)
+#     -f first_index    (first index number)
+#     -l last_index     (last index number)
+#   [ -n digits ]       (OPTIONAL: no. digits in indices, eg. -n 4 for XXXX)
+#     -s source         (source host/directory URL in ssh/scp syntax)
+#     -d dest		(destination host/directory URL in ssh/scp syntax)
+#
+# All blame and complaints can be directed to:
+#     angus.creech@ace-net.ca
+#
+# -----------------------------------------------------------------------------
+
+# Just in case someone is doing a "-l" (floating point)
+export BC_ENV_ARGS=""
+
+# Defaults
+
+# Number of download threads to run simultaneously. Don't over-egg the pudding.
+nthreads=2
+
+# Bandwidth limit for each thread. Again- puddings, excess of eggs, etc.
+# bwlimit="2.5m"
+bwlimit="2000" 
+
+# Number of files for rsync to grab per call
+chunkSize=50
+
+# Command line option parsing
+
+# Set this as the default. Overridden with -c option
+callLevel=0
+
+while getopts "p:z:n:f:l:s:d:c:" option
+do
+    case "${option}"
+    in
+	p) prefix="${OPTARG}";;
+	z) suffix="${OPTARG}";;
+	n) ndigits="${OPTARG}";;
+	f) firstDump="${OPTARG}";;
+	l) lastDump="${OPTARG}";;
+	s) srcAddr="${OPTARG}";;
+	d) destAddr="${OPTARG}";;
+	c) callLevel="${OPTARG}";;
+    esac
+done
+
+
+# If we don't get all required args...
+if [ "$prefix" == "" ] \
+       || [ "$firstDump" == "" ] || [ "$lastDump" == "" ] \
+       || [ "$srcAddr" == "" ] || [ "$destAddr" == "" ]
+then
+    echo "nsync -p prefix [-z suffix] -f first_dump_no -l last_no -s src -d dest [-n digits]"
+    exit 1
+fi
+
+
+
+# Set rsync args
+rargs="-qtrWz --bwlimit=$bwlimit"
+
+# Calculate total number of dumps
+totalDumps=$((lastDump-$firstDump))
+
+# Is this the main thread? If so, Do this
+if [ "$callLevel" == "0" ]
+then
+    echo "Killing old transfers..."
+    touch abort
+    killall rsync
+    sleep 4
+ 
+
+    rm -f abort
+    
+    echo "Spawning $nthreads threads..."
+
+    if [ "$ndigits" == "" ]
+    then
+	nbytes="`echo $firstDump| wc -c`"
+	ndigits=$(($nbytes-1))
+	echo "Assuming $ndigits digits in file numbering"
+    fi
+
+    
+    dumpsThread=$(( $totalDumps / $nthreads ))
+
+    for n in `seq 0 $(($nthreads-1))`
+    do
+	thisFirst=$((firstDump + $n * $dumpsThread))
+	thisLast=$(($thisFirst + $dumpsThread - 1))
+
+	# If we're on the last chunk (catches integer arithmetic quirks)
+	if [ $(( $thisLast > $lastDump-$dumpsThread )) == 1 ]
+	then
+	    thisLast=$lastDump
+	fi
+
+	if [ "$suffix" == "" ]
+	then
+	    suffixArg=""
+	else
+	    suffixArg="-z $suffix"
+	fi
+
+	bash $0 -p $prefix $suffixArg \
+	     -n $ndigits \
+	     -f $thisFirst -l $thisLast \
+	     -s $srcAddr -d $destAddr -c $((callLevel +1))  &
+    fi
+    done
+
+else
+    # Otherwise this is a child thread, which does the rync-ing.
+    
+    # Recursion catch-all
+    if [ "$callLevel" != "1" ]
+    then
+	echo "Too many recursions! Aborting"
+	exit 1
+    fi
+    
+    # logfile=`pwd`/nohup-"$offset".out
+    # rm -f $logfile
+    logfile=/dev/stdout
+
+    initDumps="`seq $firstDump $chunkSize $lastDump`"
+
+    # Wish there was a better way of doing this
+    if [ $ndigits == 1 ]
+    then
+	fstr='%01d,'
+    elif [ $ndigits == 2 ]
+    then
+	fstr='%02d,'
+    elif [ $ndigits == 3 ]
+    then
+	fstr='%03d,'
+    elif [ $ndigits == 4 ]
+    then
+	fstr='%04d,'
+    elif [ $ndigits == 5 ]
+    then
+	fstr='%05d,'
+    elif [ $ndigits == 6 ]
+    then
+	fstr='%06d,'
+    elif [ $ndigits == 7 ]
+    then
+	fstr='%07d,'
+    elif [ $ndigits == 8 ]
+    then
+	fstr='%08d,'
+    elif [ $ndigits == 9 ]
+    then
+	fstr='%09d,'
+    elif [ $ndigits == 10 ]
+    then
+	fstr='%010d,'
+    else
+	echo "Unsupported number of digits in file numbering (1-10)."
+	exit 1
+    fi
+    
+    listFile=".nsynctmp.$$"
+
+    fullSuffix=".$suffix"
+    
+    # rsync files in chunkSize clumps
+    for idump in $initDumps
+    do
+	# If we see an 'abort' file in the PWD, abort.
+	if test -f "abort"
+	then
+	   exit 1
+	fi
+	chunkLast=$(( $idump + $chunkSize -1))
+
+	# Sanity checking
+	if [ $(($chunkLast > $lastDump)) == 1 ]
+	then
+	    chunkLast=$lastDump
+	fi
+
+	# File numbers from $idump to $chunkLast
+	inums=`seq $idump $chunkLast`
+
+	# Create empty temporary file or concatenate existing
+	echo -n "" > $listFile
+	
+	# Create the list of files to be rsynced in this chunk. These must be
+	# exact matches (use --include-from / --exclude-from for pattern
+	# matching )
+	for i in $inums
+	do
+	    echo "$prefix""$i""$fullSuffix" >> $listFile
+	done
+
+	echo "rsyncing ..."
+	rsync $rargs --files-from=$listFile $srcAddr $destAddr
+    done
+    rm -f $listFile
+        
+    date >> $logfile
+    echo "Child transferred dumps: $firstDump - $lastDump" >> $logfile
+fi
