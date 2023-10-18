@@ -36,11 +36,10 @@ bwlimit="2000"
 # Number of files for rsync to grab per call
 chunkSize=50
 
-# Command line option parsing
-
 # Set this as the default. Overridden with -c option
 callLevel=0
 
+# Command line option parsing
 while getopts "p:z:n:f:l:s:d:c:" option
 do
     case "${option}"
