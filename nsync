@@ -71,7 +71,7 @@ fi
 rargs="-qtrWz --bwlimit=$bwlimit"
 
 # Calculate total number of dumps
-totalDumps=$((lastDump-$firstDump))
+totalDumps=$(($lastDump+1-$firstDump))
 
 # Is this the main thread? If so, Do this
 if [ "$callLevel" == "0" ]
